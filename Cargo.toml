@@ -1,0 +1,22 @@
+[package]
+name = "gh-proxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "High-performance GitHub and Docker Hub reverse proxy powered by Pingora"
+
+[dependencies]
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive", "env"] }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+http = "1"
+log = "0.4"
+pingora = { version = "0.8.1", features = ["proxy", "rustls"] }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"

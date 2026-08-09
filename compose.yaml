@@ -1,0 +1,16 @@
+services:
+  gh-proxy:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "1555:1555"
+    environment:
+      GH_PROXY_LISTEN: 0.0.0.0:1555
+      RUST_LOG: warn
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:size=16m,mode=1777
