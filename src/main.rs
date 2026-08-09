@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use clap::Parser;
-use http::StatusCode;
 use http::header::{HOST, SERVER, VIA};
+use http::{StatusCode, Uri};
 use log::{error, info};
 use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, Opt, ProxyHttp, Result, Server, Session};
@@ -14,6 +14,11 @@ const DOCKER_PROXY_HOST: &str = "docker.qwq.lu";
 const DOCKER_AUTH_PROXY_HOST: &str = "auth.docker.qwq.lu";
 
 const GITHUB: Upstream = Upstream::new("github.com");
+const GITHUB_API: Upstream = Upstream::new("api.github.com");
+const GITHUB_RAW: Upstream = Upstream::new("raw.githubusercontent.com");
+const GITHUB_CODELOAD: Upstream = Upstream::new("codeload.github.com");
+const GITHUB_OBJECTS: Upstream = Upstream::new("objects.githubusercontent.com");
+const GITHUB_RELEASES: Upstream = Upstream::new("release-assets.githubusercontent.com");
 const DOCKER_REGISTRY: Upstream = Upstream::new("registry-1.docker.io");
 const DOCKER_AUTH: Upstream = Upstream::new("auth.docker.io");
 
@@ -66,6 +71,32 @@ impl Proxy {
         }
     }
 
+    fn github_upstream(host: &str) -> Option<Upstream> {
+        match host.to_ascii_lowercase().as_str() {
+            "github.com" => Some(GITHUB),
+            "api.github.com" => Some(GITHUB_API),
+            "raw.githubusercontent.com" => Some(GITHUB_RAW),
+            "codeload.github.com" => Some(GITHUB_CODELOAD),
+            "objects.githubusercontent.com" => Some(GITHUB_OBJECTS),
+            "release-assets.githubusercontent.com" => Some(GITHUB_RELEASES),
+            _ => None,
+        }
+    }
+
+    fn github_url_target(uri: &Uri) -> Option<(Upstream, Uri)> {
+        let target = uri.path_and_query()?.as_str().strip_prefix("/https://")?;
+        let target: Uri = format!("https://{target}").parse().ok()?;
+        let upstream = Self::github_upstream(target.host()?)?;
+        let path_and_query = target.path_and_query().map_or("/", |value| value.as_str());
+        Some((upstream, path_and_query.parse().ok()?))
+    }
+
+    fn github_proxy_redirect(location: &str) -> Option<String> {
+        let target: Uri = location.parse().ok()?;
+        Self::github_upstream(target.host()?)?;
+        Some(format!("https://{GITHUB_PROXY_HOST}/{location}"))
+    }
+
     async fn write_status(
         session: &mut Session,
         status: StatusCode,
@@ -103,7 +134,24 @@ impl ProxyHttp for Proxy {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
 
-        let Some(upstream) = Self::route(host) else {
+        let mut upstream = Self::route(host);
+        if upstream == Some(GITHUB) && session.req_header().uri.path().starts_with("/https://") {
+            let Some((target_upstream, target_uri)) =
+                Self::github_url_target(&session.req_header().uri)
+            else {
+                Self::write_status(
+                    session,
+                    StatusCode::BAD_REQUEST,
+                    b"github URL not allowed\n",
+                )
+                .await?;
+                return Ok(true);
+            };
+            session.req_header_mut().set_uri(target_uri);
+            upstream = Some(target_upstream);
+        }
+
+        let Some(upstream) = upstream else {
             Self::write_status(
                 session,
                 StatusCode::MISDIRECTED_REQUEST,
@@ -129,7 +177,7 @@ impl ProxyHttp for Proxy {
         peer.options.read_timeout = Some(IO_TIMEOUT);
         peer.options.write_timeout = Some(IO_TIMEOUT);
         peer.options.idle_timeout = Some(IDLE_TIMEOUT);
-        peer.options.alpn = ALPN::H2H1;
+        peer.options.alpn = ALPN::H1;
         Ok(Box::new(peer))
     }
 
@@ -155,6 +203,24 @@ impl ProxyHttp for Proxy {
     ) -> Result<()> {
         response.remove_header(&SERVER);
         response.remove_header(&VIA);
+
+        if ctx
+            .upstream
+            .is_some_and(|upstream| upstream != DOCKER_REGISTRY)
+        {
+            let location = response
+                .headers
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            if let Some(location) = location {
+                if let Some(rewritten) = Self::github_proxy_redirect(&location) {
+                    response.insert_header("location", rewritten)?;
+                    // GitHub release redirects contain short-lived signed URLs.
+                    response.insert_header("cache-control", "no-store")?;
+                }
+            }
+        }
 
         if ctx.upstream == Some(DOCKER_REGISTRY) {
             let challenge = response
@@ -227,5 +293,31 @@ mod tests {
         assert_eq!(Proxy::route("docker.qwq.lu"), Some(DOCKER_REGISTRY));
         assert_eq!(Proxy::route("auth.docker.qwq.lu"), Some(DOCKER_AUTH));
         assert_eq!(Proxy::route("example.com"), None);
+    }
+
+    #[test]
+    fn permits_only_official_github_url_targets() {
+        let target: Uri = "/https://github.com/LLOneBot/LuckyLilliaBot/releases/download/v8.1.7/LLBot-CLI-win-x64.zip?x=1"
+            .parse()
+            .unwrap();
+        let (upstream, path) = Proxy::github_url_target(&target).unwrap();
+        assert_eq!(upstream, GITHUB);
+        assert_eq!(
+            path.path_and_query().unwrap().as_str(),
+            "/LLOneBot/LuckyLilliaBot/releases/download/v8.1.7/LLBot-CLI-win-x64.zip?x=1"
+        );
+
+        let blocked: Uri = "/https://example.com/file".parse().unwrap();
+        assert!(Proxy::github_url_target(&blocked).is_none());
+    }
+
+    #[test]
+    fn rewrites_github_download_redirects_through_proxy() {
+        assert_eq!(
+            Proxy::github_proxy_redirect("https://objects.githubusercontent.com/file?token=abc")
+                .as_deref(),
+            Some("https://gh.qwq.lu/https://objects.githubusercontent.com/file?token=abc")
+        );
+        assert!(Proxy::github_proxy_redirect("https://example.com/file").is_none());
     }
 }
