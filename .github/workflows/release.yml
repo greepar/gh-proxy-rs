@@ -28,6 +28,14 @@ jobs:
             target: aarch64-unknown-linux-musl
             rust_target: aarch64-unknown-linux-musl
             binary: gh-proxy
+          - name: linux-armv6
+            target: arm-unknown-linux-musleabihf
+            rust_target: arm-unknown-linux-musleabihf
+            binary: gh-proxy
+          - name: linux-armv7
+            target: armv7-unknown-linux-musleabihf
+            rust_target: armv7-unknown-linux-musleabihf
+            binary: gh-proxy
           - name: linux-riscv64
             target: riscv64gc-unknown-linux-musl
             rust_target: riscv64gc-unknown-linux-musl
@@ -36,10 +44,6 @@ jobs:
             target: powerpc64le-unknown-linux-musl
             rust_target: powerpc64le-unknown-linux-musl
             binary: gh-proxy
-          - name: windows-x86_64
-            target: x86_64-pc-windows-gnu
-            rust_target: x86_64-pc-windows-gnu
-            binary: gh-proxy.exe
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -68,6 +72,44 @@ jobs:
           name: ${{ matrix.name }}
           path: |
             gh-proxy-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: x86
+            runner: windows-latest
+            target: i686-pc-windows-msvc
+          - name: aarch64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/gh-proxy.exe" dist/gh-proxy.exe
+          tar -C dist -czf "gh-proxy-${{ github.ref_name }}-windows-${{ matrix.name }}.tar.gz" gh-proxy.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.name }}
+          path: gh-proxy-${{ github.ref_name }}-windows-${{ matrix.name }}.tar.gz
           if-no-files-found: error
 
   build-macos:
@@ -107,6 +149,7 @@ jobs:
     name: Publish Release
     needs:
       - build-zig
+      - build-windows
       - build-macos
     runs-on: ubuntu-latest
     steps:
@@ -131,6 +174,8 @@ jobs:
 
           ### Windows
           - [x86_64](${base_url}/gh-proxy-${{ github.ref_name }}-windows-x86_64.tar.gz)
+          - [x86](${base_url}/gh-proxy-${{ github.ref_name }}-windows-x86.tar.gz)
+          - [ARM64](${base_url}/gh-proxy-${{ github.ref_name }}-windows-aarch64.tar.gz)
 
           Other supported architectures are available in the assets below. GitHub displays each asset's SHA-256 digest.
           EOF

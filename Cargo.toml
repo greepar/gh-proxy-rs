@@ -20,3 +20,8 @@ lto = "fat"
 opt-level = 3
 panic = "abort"
 strip = "symbols"
+
+[patch.crates-io]
+# zlib-ng's CMake build enables ARM32 NEON helpers that conflict with Zig's
+# current arm_neon.h macros. The vendored patch disables those optional paths.
+libz-ng-sys = { path = "vendor-libz-ng-sys-1.1.29" }
