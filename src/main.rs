@@ -84,11 +84,27 @@ impl Proxy {
     }
 
     fn github_url_target(uri: &Uri) -> Option<(Upstream, Uri)> {
-        let target = uri.path_and_query()?.as_str().strip_prefix("/https://")?;
+        let target = uri.path_and_query()?.as_str().strip_prefix('/')?;
+        let target = target
+            .strip_prefix("https://")
+            .or_else(|| target.strip_prefix("http://"))
+            .unwrap_or(target);
         let target: Uri = format!("https://{target}").parse().ok()?;
         let upstream = Self::github_upstream(target.host()?)?;
         let path_and_query = target.path_and_query().map_or("/", |value| value.as_str());
         Some((upstream, path_and_query.parse().ok()?))
+    }
+
+    fn is_github_url_format(uri: &Uri) -> bool {
+        let target = uri.path().strip_prefix('/').unwrap_or_default();
+        if target.starts_with("https://") || target.starts_with("http://") {
+            return true;
+        }
+
+        target
+            .split('/')
+            .next()
+            .is_some_and(|host| Self::github_upstream(host).is_some())
     }
 
     fn github_proxy_redirect(location: &str) -> Option<String> {
@@ -135,7 +151,7 @@ impl ProxyHttp for Proxy {
             .unwrap_or_default();
 
         let mut upstream = Self::route(host);
-        if upstream == Some(GITHUB) && session.req_header().uri.path().starts_with("/https://") {
+        if upstream == Some(GITHUB) && Self::is_github_url_format(&session.req_header().uri) {
             let Some((target_upstream, target_uri)) =
                 Self::github_url_target(&session.req_header().uri)
             else {
@@ -309,6 +325,22 @@ mod tests {
 
         let blocked: Uri = "/https://example.com/file".parse().unwrap();
         assert!(Proxy::github_url_target(&blocked).is_none());
+
+        let raw: Uri =
+            "/raw.githubusercontent.com/komari-monitor/komari-agent/refs/heads/main/install.sh"
+                .parse()
+                .unwrap();
+        let (upstream, path) = Proxy::github_url_target(&raw).unwrap();
+        assert_eq!(upstream, GITHUB_RAW);
+        assert_eq!(
+            path.path(),
+            "/komari-monitor/komari-agent/refs/heads/main/install.sh"
+        );
+
+        let http: Uri = "/http://raw.githubusercontent.com/komari-monitor/komari-agent/refs/heads/main/install.sh"
+            .parse()
+            .unwrap();
+        assert_eq!(Proxy::github_url_target(&http).unwrap().0, GITHUB_RAW);
     }
 
     #[test]

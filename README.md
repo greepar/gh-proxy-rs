@@ -75,3 +75,24 @@ sudo sysctl -p /etc/sysctl.d/99-z-gh-proxy-throughput.conf
 cargo build --release
 ./target/release/gh-proxy --listen 0.0.0.0:1555
 ```
+
+## Docker
+
+版本标签发布时，GitHub Actions 会构建并发布 Linux x86_64 和 ARM64 多架构镜像到 GitHub Container Registry：
+
+```bash
+docker pull ghcr.io/greepar/gh-proxy-rs:latest
+docker run -d --name gh-proxy --restart unless-stopped \
+  --read-only \
+  --tmpfs /tmp:size=16m,mode=1777 \
+  --security-opt no-new-privileges:true \
+  --cap-drop ALL \
+  -p 1555:1555 \
+  ghcr.io/greepar/gh-proxy-rs:latest
+```
+
+固定版本示例：
+
+```bash
+docker pull ghcr.io/greepar/gh-proxy-rs:v0.1.1
+```
