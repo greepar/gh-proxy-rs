@@ -256,6 +256,7 @@ impl AsyncRead for RawStreamWrapper {
                         Ok(r) => {
                             if let Some(ControlMessageOwned::ScmTimestampsns(rtime)) = r
                                 .cmsgs()
+                                .map_err(io::Error::from)?
                                 .find(|i| matches!(i, ControlMessageOwned::ScmTimestampsns(_)))
                             {
                                 // The returned timestamp is a real (i.e. not monotonic) timestamp
@@ -434,7 +435,7 @@ impl Stream {
         if let RawStream::Tcp(s) = &self.stream_mut().get_mut().stream {
             let timestamp_options = TimestampingFlag::SOF_TIMESTAMPING_RX_SOFTWARE
                 | TimestampingFlag::SOF_TIMESTAMPING_SOFTWARE;
-            setsockopt(s.as_raw_fd(), sockopt::Timestamping, &timestamp_options)
+            setsockopt(s, sockopt::Timestamping, &timestamp_options)
                 .or_err(InternalError, "failed to set SOF_TIMESTAMPING_RX_SOFTWARE")?;
             self.stream_mut().get_mut().enable_rx_ts(true);
         }

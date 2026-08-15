@@ -304,7 +304,15 @@ features = ["full"]
 version = "0.5.0"
 
 [target."cfg(unix)".dependencies.nix]
-version = "~0.24.3"
+# nix 0.24 does not compile against current FreeBSD and NetBSD libc headers.
+version = "0.30"
+features = [
+    "fs",
+    "net",
+    "socket",
+    "time",
+    "uio",
+]
 
 [target."cfg(unix)".dev-dependencies.hyperlocal]
 version = "0.9"

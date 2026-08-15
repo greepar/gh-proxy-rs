@@ -76,7 +76,8 @@ daggy = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 daemonize = "0.5.0"
-nix = "~0.24.3"
+# nix 0.24 does not compile against current FreeBSD and NetBSD libc headers.
+nix = { version = "0.30", features = ["fs", "net", "socket", "time", "uio"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59.0", features = ["Win32_Networking_WinSock"] }

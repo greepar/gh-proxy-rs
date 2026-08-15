@@ -16,6 +16,8 @@
 use log::{debug, error, warn};
 use nix::errno::Errno;
 #[cfg(target_os = "linux")]
+use nix::fcntl::AT_FDCWD;
+#[cfg(target_os = "linux")]
 use nix::sys::socket::{self, AddressFamily, RecvMsg, SockFlag, SockType, UnixAddr};
 #[cfg(target_os = "linux")]
 use nix::sys::stat;
@@ -24,6 +26,8 @@ use std::collections::HashMap;
 use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::io::{IoSlice, IoSliceMut};
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 #[cfg(target_os = "linux")]
 use std::{thread, time};
@@ -127,27 +131,26 @@ where
             // TODO: warn if exist but not able to unlink
         }
     };
-    socket::bind(listen_fd, &unix_addr).unwrap();
+    socket::bind(listen_fd.as_raw_fd(), &unix_addr).unwrap();
 
     /* sock is created before we change user, need to give permission */
     stat::fchmodat(
-        None,
+        AT_FDCWD,
         path,
         stat::Mode::from_bits_truncate(0o666),
         stat::FchmodatFlags::FollowSymlink,
     )
     .unwrap();
 
-    socket::listen(listen_fd, 8).unwrap();
+    socket::listen(&listen_fd, socket::Backlog::new(8).unwrap()).unwrap();
 
-    let fd = match accept_with_retry_timeout(listen_fd, max_retry) {
+    let fd = match accept_with_retry_timeout(listen_fd.as_raw_fd(), max_retry) {
         Ok(fd) => fd,
         Err(e) => {
             error!("Giving up reading socket from: {path}, error: {e:?}");
             //cleanup
-            if nix::unistd::close(listen_fd).is_ok() {
-                nix::unistd::unlink(path).unwrap();
-            }
+            drop(listen_fd);
+            nix::unistd::unlink(path).unwrap();
             return Err(e);
         }
     };
@@ -163,7 +166,7 @@ where
     .unwrap();
 
     let mut fds: Vec<RawFd> = Vec::new();
-    for cmsg in msg.cmsgs() {
+    for cmsg in msg.cmsgs()? {
         if let socket::ControlMessageOwned::ScmRights(mut vec_fds) = cmsg {
             fds.append(&mut vec_fds)
         } else {
@@ -172,9 +175,8 @@ where
     }
 
     //cleanup
-    if nix::unistd::close(listen_fd).is_ok() {
-        nix::unistd::unlink(path).unwrap();
-    }
+    drop(listen_fd);
+    nix::unistd::unlink(path).unwrap();
 
     Ok((fds, msg.bytes))
 }
@@ -250,7 +252,7 @@ where
     let mut nonblocking_polls = 0;
 
     let conn_result: Result<usize, Error> = loop {
-        match socket::connect(send_fd, &unix_addr) {
+        match socket::connect(send_fd.as_raw_fd(), &unix_addr) {
             Ok(_) => break Ok(0),
             Err(e) => match e {
                 /* If the new process hasn't created the upgrade sock we'll get an ENOENT.
@@ -295,7 +297,7 @@ where
             let cmsg = [scm; 1];
             loop {
                 match socket::sendmsg(
-                    send_fd,
+                    send_fd.as_raw_fd(),
                     &io_vec,
                     &cmsg,
                     socket::MsgFlags::empty(),
@@ -327,7 +329,7 @@ where
         Err(_) => conn_result,
     };
 
-    nix::unistd::close(send_fd).unwrap();
+    drop(send_fd);
     result
 }
 

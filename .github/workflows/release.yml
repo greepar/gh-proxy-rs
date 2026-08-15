@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -43,6 +44,10 @@ jobs:
           - name: linux-powerpc64le
             target: powerpc64le-unknown-linux-musl
             rust_target: powerpc64le-unknown-linux-musl
+            binary: gh-proxy
+          - name: linux-loongarch64
+            target: loongarch64-unknown-linux-musl
+            rust_target: loongarch64-unknown-linux-musl
             binary: gh-proxy
     steps:
       - uses: actions/checkout@v4
@@ -145,12 +150,55 @@ jobs:
             gh-proxy-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
+  build-freebsd:
+    name: Build FreeBSD x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15"
+          prepare: pkg install -y rust cmake
+          run: |
+            cargo build --locked --release
+            mkdir -p dist
+            cp target/release/gh-proxy dist/gh-proxy
+            tar -C dist -czf "gh-proxy-${GITHUB_REF_NAME}-freebsd-x86_64.tar.gz" gh-proxy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-x86_64
+          path: gh-proxy-${{ github.ref_name }}-freebsd-x86_64.tar.gz
+          if-no-files-found: error
+
+  build-netbsd:
+    name: Build NetBSD x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: "11"
+          prepare: /usr/sbin/pkg_add -u rust cmake
+          run: |
+            cargo build --locked --release
+            mkdir -p dist
+            cp target/release/gh-proxy dist/gh-proxy
+            tar -C dist -czf "gh-proxy-${GITHUB_REF_NAME}-netbsd-x86_64.tar.gz" gh-proxy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-x86_64
+          path: gh-proxy-${{ github.ref_name }}-netbsd-x86_64.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-zig
       - build-windows
       - build-macos
+      - build-freebsd
+      - build-netbsd
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -186,6 +234,7 @@ jobs:
 
   container:
     name: Publish Container Image
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build-zig
     runs-on: ubuntu-latest
     steps:
