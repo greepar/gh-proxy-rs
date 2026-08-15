@@ -1,10 +1,8 @@
 ARG TARGETARCH
-FROM debian:bookworm-slim
+FROM alpine:3.22
 ARG TARGETARCH
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --no-create-home gh-proxy
+RUN apk add --no-cache ca-certificates \
+    && adduser -S -D -H gh-proxy
 COPY dist/${TARGETARCH}/gh-proxy /usr/local/bin/gh-proxy
 USER gh-proxy
 EXPOSE 1555
