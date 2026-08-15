@@ -6,6 +6,9 @@ services:
       - "1555:1555"
     environment:
       GH_PROXY_LISTEN: 0.0.0.0:1555
+      GH_PROXY_GITHUB_HOST: github-proxy.example.com
+      GH_PROXY_DOCKER_HOST: docker-proxy.example.com
+      GH_PROXY_DOCKER_AUTH_HOST: docker-auth.example.com
       RUST_LOG: warn
     read_only: true
     security_opt:

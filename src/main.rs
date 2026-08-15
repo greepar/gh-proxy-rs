@@ -9,10 +9,6 @@ use pingora::http::ResponseHeader;
 use pingora::prelude::{HttpPeer, Opt, ProxyHttp, Result, Server, Session};
 use pingora::protocols::tls::ALPN;
 
-const GITHUB_PROXY_HOST: &str = "gh.qwq.lu";
-const DOCKER_PROXY_HOST: &str = "docker.qwq.lu";
-const DOCKER_AUTH_PROXY_HOST: &str = "auth.docker.qwq.lu";
-
 const GITHUB: Upstream = Upstream::new("github.com");
 const GITHUB_API: Upstream = Upstream::new("api.github.com");
 const GITHUB_RAW: Upstream = Upstream::new("raw.githubusercontent.com");
@@ -32,6 +28,15 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 struct Args {
     #[arg(long, env = "GH_PROXY_LISTEN", default_value = "0.0.0.0:1555")]
     listen: String,
+
+    #[arg(long, env = "GH_PROXY_GITHUB_HOST")]
+    github_host: String,
+
+    #[arg(long, env = "GH_PROXY_DOCKER_HOST")]
+    docker_host: Option<String>,
+
+    #[arg(long, env = "GH_PROXY_DOCKER_AUTH_HOST")]
+    docker_auth_host: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,21 +59,31 @@ struct RequestContext {
     upstream: Option<Upstream>,
 }
 
-struct Proxy;
+struct Proxy {
+    github_host: String,
+    docker_host: Option<String>,
+    docker_auth_host: Option<String>,
+}
 
 impl Proxy {
-    fn route(host: &str) -> Option<Upstream> {
-        match host
-            .split(':')
+    fn configured_host(host: &str) -> String {
+        host.split(':')
             .next()
             .unwrap_or(host)
+            .trim()
             .to_ascii_lowercase()
-            .as_str()
-        {
-            GITHUB_PROXY_HOST => Some(GITHUB),
-            DOCKER_PROXY_HOST => Some(DOCKER_REGISTRY),
-            DOCKER_AUTH_PROXY_HOST => Some(DOCKER_AUTH),
-            _ => None,
+    }
+
+    fn route(&self, host: &str) -> Option<Upstream> {
+        let host = Self::configured_host(host);
+        if host == self.github_host {
+            Some(GITHUB)
+        } else if self.docker_host.as_deref() == Some(host.as_str()) {
+            Some(DOCKER_REGISTRY)
+        } else if self.docker_auth_host.as_deref() == Some(host.as_str()) {
+            Some(DOCKER_AUTH)
+        } else {
+            None
         }
     }
 
@@ -108,10 +123,10 @@ impl Proxy {
             .is_some_and(|host| Self::github_upstream(host).is_some())
     }
 
-    fn github_proxy_redirect(location: &str) -> Option<String> {
+    fn github_proxy_redirect(&self, location: &str) -> Option<String> {
         let target: Uri = location.parse().ok()?;
         Self::github_upstream(target.host()?)?;
-        Some(format!("https://{GITHUB_PROXY_HOST}/{location}"))
+        Some(format!("https://{}/{location}", self.github_host))
     }
 
     fn ghcr_target(uri: &Uri) -> Option<Uri> {
@@ -168,7 +183,7 @@ impl ProxyHttp for Proxy {
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
 
-        let mut upstream = Self::route(host);
+        let mut upstream = self.route(host);
         if upstream == Some(DOCKER_REGISTRY) {
             if let Some(target_uri) = Self::ghcr_target(&session.req_header().uri) {
                 session.req_header_mut().set_uri(target_uri);
@@ -255,7 +270,7 @@ impl ProxyHttp for Proxy {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             if let Some(location) = location {
-                if let Some(rewritten) = Self::github_proxy_redirect(&location) {
+                if let Some(rewritten) = self.github_proxy_redirect(&location) {
                     response.insert_header("location", rewritten)?;
                     // GitHub release redirects contain short-lived signed URLs.
                     response.insert_header("cache-control", "no-store")?;
@@ -273,10 +288,23 @@ impl ProxyHttp for Proxy {
                 let challenge = if ctx.upstream == Some(GHCR) {
                     challenge.replace(
                         "https://ghcr.io/token",
-                        "https://docker.qwq.lu/ghcr.io/token",
+                        &format!(
+                            "https://{}/ghcr.io/token",
+                            self.docker_host
+                                .as_deref()
+                                .expect("GHCR requires Docker host")
+                        ),
                     )
                 } else {
-                    challenge.replace("https://auth.docker.io/", "https://auth.docker.qwq.lu/")
+                    challenge.replace(
+                        "https://auth.docker.io/",
+                        &format!(
+                            "https://{}/",
+                            self.docker_auth_host
+                                .as_deref()
+                                .expect("Docker auth requires auth host")
+                        ),
+                    )
                 };
                 response.insert_header("www-authenticate", challenge)?;
             }
@@ -305,6 +333,21 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let args = Args::parse();
+    let docker_host = args
+        .docker_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(Proxy::configured_host);
+    let docker_auth_host = args
+        .docker_auth_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(Proxy::configured_host);
+    if docker_host.is_some() != docker_auth_host.is_some() {
+        panic!("GH_PROXY_DOCKER_HOST and GH_PROXY_DOCKER_AUTH_HOST must be set together");
+    }
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
 
     let conf = pingora::server::configuration::ServerConf {
@@ -320,7 +363,12 @@ fn main() {
     let mut server = Server::new_with_opt_and_conf(None::<Opt>, conf);
     server.bootstrap();
 
-    let mut service = pingora::proxy::http_proxy_service(&server.configuration, Proxy);
+    let proxy = Proxy {
+        github_host: Proxy::configured_host(&args.github_host),
+        docker_host,
+        docker_auth_host,
+    };
+    let mut service = pingora::proxy::http_proxy_service(&server.configuration, proxy);
     service.add_tcp(&args.listen);
     server.add_service(service);
 
@@ -332,13 +380,25 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn proxy() -> Proxy {
+        Proxy {
+            github_host: "github-proxy.example.com".to_owned(),
+            docker_host: Some("docker-proxy.example.com".to_owned()),
+            docker_auth_host: Some("docker-auth.example.com".to_owned()),
+        }
+    }
+
     #[test]
     fn routes_only_whitelisted_hosts() {
-        assert_eq!(Proxy::route("gh.qwq.lu"), Some(GITHUB));
-        assert_eq!(Proxy::route("gh.qwq.lu:8080"), Some(GITHUB));
-        assert_eq!(Proxy::route("docker.qwq.lu"), Some(DOCKER_REGISTRY));
-        assert_eq!(Proxy::route("auth.docker.qwq.lu"), Some(DOCKER_AUTH));
-        assert_eq!(Proxy::route("example.com"), None);
+        let proxy = proxy();
+        assert_eq!(proxy.route("github-proxy.example.com"), Some(GITHUB));
+        assert_eq!(proxy.route("github-proxy.example.com:8080"), Some(GITHUB));
+        assert_eq!(
+            proxy.route("docker-proxy.example.com"),
+            Some(DOCKER_REGISTRY)
+        );
+        assert_eq!(proxy.route("docker-auth.example.com"), Some(DOCKER_AUTH));
+        assert_eq!(proxy.route("example.com"), None);
     }
 
     #[test]
@@ -375,12 +435,20 @@ mod tests {
 
     #[test]
     fn rewrites_github_download_redirects_through_proxy() {
+        let proxy = proxy();
         assert_eq!(
-            Proxy::github_proxy_redirect("https://objects.githubusercontent.com/file?token=abc")
+            proxy
+                .github_proxy_redirect("https://objects.githubusercontent.com/file?token=abc")
                 .as_deref(),
-            Some("https://gh.qwq.lu/https://objects.githubusercontent.com/file?token=abc")
+            Some(
+                "https://github-proxy.example.com/https://objects.githubusercontent.com/file?token=abc"
+            )
         );
-        assert!(Proxy::github_proxy_redirect("https://example.com/file").is_none());
+        assert!(
+            proxy
+                .github_proxy_redirect("https://example.com/file")
+                .is_none()
+        );
     }
 
     #[test]

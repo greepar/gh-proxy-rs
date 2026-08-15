@@ -1,9 +1,9 @@
 [package]
 name = "gh-proxy"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.85"
-license = "Apache-2.0"
+license = "MIT"
 description = "High-performance GitHub and Docker Hub reverse proxy powered by Pingora"
 
 [dependencies]
