@@ -146,20 +146,6 @@ latest_version() {
     printf '%s' "${latest_url##*/}"
 }
 
-verify_archive() {
-    local archive="$1"
-    local checksum="$2"
-    local expected actual
-
-    expected=$(awk '{print $1}' "${checksum}")
-    if command -v sha256sum >/dev/null; then
-        actual=$(sha256sum "${archive}" | awk '{print $1}')
-    else
-        actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
-    fi
-    [[ "${actual}" == "${expected}" ]] || die "archive checksum verification failed"
-}
-
 install_binary() {
     local version archive base_url tmp_dir
     version=$(latest_version)
@@ -169,8 +155,6 @@ install_binary() {
 
     printf 'Downloading gh-proxy %s for %s...\n' "${version}" "${PLATFORM}"
     curl -fL --retry 3 -o "${tmp_dir}/${archive}" "${base_url}/${archive}"
-    curl -fL --retry 3 -o "${tmp_dir}/${archive}.sha256" "${base_url}/${archive}.sha256"
-    verify_archive "${tmp_dir}/${archive}" "${tmp_dir}/${archive}.sha256"
     tar -xzf "${tmp_dir}/${archive}" -C "${tmp_dir}"
 
     install -d -m 0755 -o root -g root "${INSTALL_DIR}"

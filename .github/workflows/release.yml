@@ -28,17 +28,17 @@ jobs:
             target: aarch64-unknown-linux-musl
             rust_target: aarch64-unknown-linux-musl
             binary: gh-proxy
+          - name: linux-riscv64
+            target: riscv64gc-unknown-linux-musl
+            rust_target: riscv64gc-unknown-linux-musl
+            binary: gh-proxy
+          - name: linux-powerpc64le
+            target: powerpc64le-unknown-linux-musl
+            rust_target: powerpc64le-unknown-linux-musl
+            binary: gh-proxy
           - name: windows-x86_64
             target: x86_64-pc-windows-gnu
             rust_target: x86_64-pc-windows-gnu
-            binary: gh-proxy.exe
-          - name: windows-x86
-            target: i686-pc-windows-gnu
-            rust_target: i686-pc-windows-gnu
-            binary: gh-proxy.exe
-          - name: windows-aarch64
-            target: aarch64-pc-windows-gnullvm
-            rust_target: aarch64-pc-windows-gnullvm
             binary: gh-proxy.exe
     steps:
       - uses: actions/checkout@v4
@@ -63,13 +63,11 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.rust_target }}/release/${{ matrix.binary }}" "dist/${{ matrix.binary }}"
           tar -C dist -czf "gh-proxy-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" "${{ matrix.binary }}"
-          sha256sum "gh-proxy-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" > "gh-proxy-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: |
             gh-proxy-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
-            gh-proxy-${{ github.ref_name }}-${{ matrix.name }}.tar.gz.sha256
           if-no-files-found: error
 
   build-macos:
@@ -98,13 +96,11 @@ jobs:
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/gh-proxy" dist/gh-proxy
           tar -C dist -czf "gh-proxy-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz" gh-proxy
-          shasum -a 256 "gh-proxy-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz" > "gh-proxy-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: macos-${{ matrix.arch }}
           path: |
             gh-proxy-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz
-            gh-proxy-${{ github.ref_name }}-macos-${{ matrix.arch }}.tar.gz.sha256
           if-no-files-found: error
 
   release:
@@ -118,12 +114,29 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      - name: Generate checksums
+      - name: Generate release notes
+        shell: bash
         run: |
-          find artifacts -type f -name '*.tar.gz' -print0 | sort -z | xargs -0 sha256sum > artifacts/SHA256SUMS
+          base_url="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+          cat > RELEASE_NOTES.md <<EOF
+          ## Quick downloads
+
+          ### Linux
+          - [x86_64](${base_url}/gh-proxy-${{ github.ref_name }}-linux-x86_64.tar.gz)
+          - [ARM64](${base_url}/gh-proxy-${{ github.ref_name }}-linux-aarch64.tar.gz)
+
+          ### macOS
+          - [Apple Silicon](${base_url}/gh-proxy-${{ github.ref_name }}-macos-aarch64.tar.gz)
+          - [Intel](${base_url}/gh-proxy-${{ github.ref_name }}-macos-x86_64.tar.gz)
+
+          ### Windows
+          - [x86_64](${base_url}/gh-proxy-${{ github.ref_name }}-windows-x86_64.tar.gz)
+
+          Other supported architectures are available in the assets below. GitHub displays each asset's SHA-256 digest.
+          EOF
       - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: artifacts/*
 
   container:
