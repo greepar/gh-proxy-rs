@@ -403,14 +403,14 @@ mod tests {
 
     #[test]
     fn permits_only_official_github_url_targets() {
-        let target: Uri = "/https://github.com/LLOneBot/LuckyLilliaBot/releases/download/v8.1.7/LLBot-CLI-win-x64.zip?x=1"
+        let target: Uri = "/https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz"
             .parse()
             .unwrap();
         let (upstream, path) = Proxy::github_url_target(&target).unwrap();
         assert_eq!(upstream, GITHUB);
         assert_eq!(
             path.path_and_query().unwrap().as_str(),
-            "/LLOneBot/LuckyLilliaBot/releases/download/v8.1.7/LLBot-CLI-win-x64.zip?x=1"
+            "/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-X64.tar.xz"
         );
 
         let blocked: Uri = "/https://example.com/file".parse().unwrap();
