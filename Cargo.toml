@@ -25,6 +25,9 @@ strip = "symbols"
 # zlib-ng's CMake build enables ARM32 NEON helpers that conflict with Zig's
 # current arm_neon.h macros. The vendored patch disables those optional paths.
 libz-ng-sys = { path = "vendor-libz-ng-sys-1.1.29" }
+# nix 0.30.1 references IFF_NOTRAILERS on NetBSD, which libc no longer defines.
+# The vendored patch drops the NetBSD cfg so the crate builds on NetBSD 11.
+nix = { path = "vendor-nix-0.30.1" }
 # Pingora 0.8.1 narrows 32-bit Windows socket handles to u64 before passing
 # them to Tokio. Let the target-specific RawSocket type be inferred instead.
 pingora-core = { path = "vendor-pingora-core-0.8.1" }
