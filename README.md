@@ -48,6 +48,18 @@ Docker `/etc/docker/daemon.json`：
 {"registry-mirrors":["https://docker.qwq.lu"]}
 ```
 
+`docker.qwq.lu` 同时支持 Docker Hub 与固定 GHCR 前缀：
+
+```bash
+# Docker Hub
+docker pull docker.qwq.lu/library/alpine:latest
+
+# GitHub Container Registry
+docker pull docker.qwq.lu/ghcr.io/greepar/gh-proxy-rs:latest
+```
+
+GHCR 前缀仅映射到 `ghcr.io`，不接受任意 Registry 域名。
+
 ## 系统调优
 
 `--tune` 会写入 `/etc/sysctl.d/99-z-gh-proxy-throughput.conf`：

@@ -21,6 +21,7 @@ const GITHUB_OBJECTS: Upstream = Upstream::new("objects.githubusercontent.com");
 const GITHUB_RELEASES: Upstream = Upstream::new("release-assets.githubusercontent.com");
 const DOCKER_REGISTRY: Upstream = Upstream::new("registry-1.docker.io");
 const DOCKER_AUTH: Upstream = Upstream::new("auth.docker.io");
+const GHCR: Upstream = Upstream::new("ghcr.io");
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_TIMEOUT: Duration = Duration::from_secs(300);
@@ -113,6 +114,23 @@ impl Proxy {
         Some(format!("https://{GITHUB_PROXY_HOST}/{location}"))
     }
 
+    fn ghcr_target(uri: &Uri) -> Option<Uri> {
+        let target = uri.path_and_query()?.as_str();
+        let target = if let Some(target) = target.strip_prefix("/v2/ghcr.io") {
+            format!("/v2{target}")
+        } else {
+            let target = target.strip_prefix("/ghcr.io")?;
+            target.to_owned()
+        };
+
+        let target = if target.is_empty() || target.starts_with('?') {
+            format!("/{target}")
+        } else {
+            target
+        };
+        target.parse().ok()
+    }
+
     async fn write_status(
         session: &mut Session,
         status: StatusCode,
@@ -151,6 +169,13 @@ impl ProxyHttp for Proxy {
             .unwrap_or_default();
 
         let mut upstream = Self::route(host);
+        if upstream == Some(DOCKER_REGISTRY) {
+            if let Some(target_uri) = Self::ghcr_target(&session.req_header().uri) {
+                session.req_header_mut().set_uri(target_uri);
+                upstream = Some(GHCR);
+            }
+        }
+
         if upstream == Some(GITHUB) && Self::is_github_url_format(&session.req_header().uri) {
             let Some((target_upstream, target_uri)) =
                 Self::github_url_target(&session.req_header().uri)
@@ -238,17 +263,22 @@ impl ProxyHttp for Proxy {
             }
         }
 
-        if ctx.upstream == Some(DOCKER_REGISTRY) {
+        if ctx.upstream == Some(DOCKER_REGISTRY) || ctx.upstream == Some(GHCR) {
             let challenge = response
                 .headers
                 .get("www-authenticate")
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned);
             if let Some(challenge) = challenge {
-                response.insert_header(
-                    "www-authenticate",
-                    challenge.replace("https://auth.docker.io/", "https://auth.docker.qwq.lu/"),
-                )?;
+                let challenge = if ctx.upstream == Some(GHCR) {
+                    challenge.replace(
+                        "https://ghcr.io/token",
+                        "https://docker.qwq.lu/ghcr.io/token",
+                    )
+                } else {
+                    challenge.replace("https://auth.docker.io/", "https://auth.docker.qwq.lu/")
+                };
+                response.insert_header("www-authenticate", challenge)?;
             }
         }
 
@@ -351,5 +381,33 @@ mod tests {
             Some("https://gh.qwq.lu/https://objects.githubusercontent.com/file?token=abc")
         );
         assert!(Proxy::github_proxy_redirect("https://example.com/file").is_none());
+    }
+
+    #[test]
+    fn routes_ghcr_namespace_through_ghcr() {
+        let image: Uri = "/v2/ghcr.io/greepar/gh-proxy-rs/manifests/latest"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            Proxy::ghcr_target(&image)
+                .unwrap()
+                .path_and_query()
+                .unwrap()
+                .as_str(),
+            "/v2/greepar/gh-proxy-rs/manifests/latest"
+        );
+
+        let token: Uri = "/ghcr.io/token?service=ghcr.io".parse().unwrap();
+        assert_eq!(
+            Proxy::ghcr_target(&token)
+                .unwrap()
+                .path_and_query()
+                .unwrap()
+                .as_str(),
+            "/token?service=ghcr.io"
+        );
+
+        let docker_hub: Uri = "/v2/library/alpine/manifests/latest".parse().unwrap();
+        assert!(Proxy::ghcr_target(&docker_hub).is_none());
     }
 }
