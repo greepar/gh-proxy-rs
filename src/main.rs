@@ -355,8 +355,6 @@ fn main() {
         work_stealing: true,
         upstream_keepalive_pool_size: 512,
         max_retries: 2,
-        grace_period_seconds: Some(10),
-        graceful_shutdown_timeout_seconds: Some(30),
         ..Default::default()
     };
 
