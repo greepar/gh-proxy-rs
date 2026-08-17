@@ -143,7 +143,7 @@ pub trait ShutdownSignalWatch {
 /// A Unix shutdown watcher that awaits for Unix signals.
 ///
 /// - `SIGQUIT`: graceful upgrade
-/// - `SIGTERM`: graceful terminate
+/// - `SIGTERM`: fast shutdown
 /// - `SIGINT`: fast shutdown
 #[cfg(unix)]
 pub struct UnixShutdownSignalWatch;
@@ -161,7 +161,7 @@ impl ShutdownSignalWatch for UnixShutdownSignalWatch {
                 ShutdownSignal::GracefulUpgrade
             },
             _ = graceful_terminate_signal.recv() => {
-                ShutdownSignal::GracefulTerminate
+                ShutdownSignal::FastShutdown
             },
             _ = fast_shutdown_signal.recv() => {
                 ShutdownSignal::FastShutdown
@@ -243,7 +243,7 @@ impl Server {
 
         match run_args.shutdown_signal.recv().await {
             ShutdownSignal::FastShutdown => {
-                info!("SIGINT received, exiting");
+                info!("Shutdown signal received, exiting");
                 ShutdownType::Quick
             }
             ShutdownSignal::GracefulTerminate => {

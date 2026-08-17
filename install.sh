@@ -5,6 +5,8 @@ REPO="greepar/gh-proxy-rs"
 INSTALL_DIR="/opt/gh-proxy"
 CONFIG_FILE="${INSTALL_DIR}/gh-proxy.conf"
 LINUX_SERVICE_FILE="/etc/systemd/system/gh-proxy.service"
+OPENRC_SERVICE_FILE="/etc/init.d/gh-proxy"
+OPENRC_LOG_FILE="/var/log/gh-proxy.log"
 LINUX_SYSCTL_FILE="/etc/sysctl.d/99-z-gh-proxy-throughput.conf"
 MACOS_PLIST_FILE="/Library/LaunchDaemons/com.greepar.gh-proxy.plist"
 MACOS_LOG_FILE="/var/log/gh-proxy.log"
@@ -14,6 +16,7 @@ DEFAULT_DOCKER_HOST=""
 DEFAULT_DOCKER_AUTH_HOST=""
 OS=""
 PLATFORM=""
+INIT_SYSTEM=""
 
 die() {
     printf 'Error: %s\n' "$*" >&2
@@ -60,6 +63,17 @@ detect_platform() {
         aarch64|arm64) PLATFORM="${OS}-aarch64" ;;
         *) die "unsupported architecture: $(uname -m)" ;;
     esac
+}
+
+detect_init_system() {
+    [[ "${OS}" == "linux" ]] || return
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        INIT_SYSTEM="systemd"
+    elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
+        INIT_SYSTEM="openrc"
+    else
+        die "systemd or OpenRC is required on Linux"
+    fi
 }
 
 validate_listen() {
@@ -163,13 +177,29 @@ install_binary() {
 }
 
 ensure_linux_account() {
-    getent group gh-proxy >/dev/null 2>&1 || groupadd --system gh-proxy
+    local group_exists=false
+    if command -v getent >/dev/null 2>&1; then
+        getent group gh-proxy >/dev/null 2>&1 && group_exists=true
+    elif grep -q '^gh-proxy:' /etc/group; then
+        group_exists=true
+    fi
+    if [[ "${group_exists}" == "false" ]]; then
+        if command -v groupadd >/dev/null 2>&1; then
+            groupadd --system gh-proxy
+        else
+            addgroup -S gh-proxy
+        fi
+    fi
     if ! id -u gh-proxy >/dev/null 2>&1; then
-        useradd --system --gid gh-proxy --home-dir /nonexistent --shell /usr/sbin/nologin gh-proxy
+        if command -v useradd >/dev/null 2>&1; then
+            useradd --system --gid gh-proxy --home-dir /nonexistent --shell /usr/sbin/nologin gh-proxy
+        else
+            adduser -S -D -H -G gh-proxy -s /sbin/nologin gh-proxy
+        fi
     fi
 }
 
-write_linux_service() {
+write_systemd_service() {
     ensure_linux_account
     cat >"${LINUX_SERVICE_FILE}" <<'EOF'
 [Unit]
@@ -186,7 +216,6 @@ EnvironmentFile=/opt/gh-proxy/gh-proxy.conf
 ExecStart=/opt/gh-proxy/gh-proxy --listen ${GH_PROXY_LISTEN}
 Restart=always
 RestartSec=2
-KillSignal=SIGINT
 TimeoutStopSec=5
 LimitNOFILE=1048576
 NoNewPrivileges=true
@@ -204,6 +233,36 @@ EOF
     systemctl daemon-reload
     systemctl enable --now gh-proxy.service
     systemctl restart gh-proxy.service
+}
+
+write_openrc_service() {
+    ensure_linux_account
+    cat >"${OPENRC_SERVICE_FILE}" <<'EOF'
+#!/sbin/openrc-run
+
+name="gh-proxy"
+description="gh-proxy Pingora reverse proxy"
+command="/opt/gh-proxy/gh-proxy"
+command_user="gh-proxy:gh-proxy"
+command_background="yes"
+pidfile="/run/gh-proxy.pid"
+output_log="/var/log/gh-proxy.log"
+error_log="/var/log/gh-proxy.log"
+retry="TERM/5/KILL/1"
+
+. /opt/gh-proxy/gh-proxy.conf
+export GH_PROXY_GITHUB_HOST GH_PROXY_DOCKER_HOST GH_PROXY_DOCKER_AUTH_HOST
+command_args="--listen ${GH_PROXY_LISTEN}"
+
+depend() {
+    need net
+}
+EOF
+    chmod 0755 "${OPENRC_SERVICE_FILE}"
+    touch "${OPENRC_LOG_FILE}"
+    chown gh-proxy:gh-proxy "${OPENRC_LOG_FILE}"
+    rc-update add gh-proxy default >/dev/null
+    rc-service gh-proxy restart
 }
 
 write_macos_service() {
@@ -240,7 +299,11 @@ EOF
 
 restart_service() {
     if [[ "${OS}" == "linux" ]]; then
-        write_linux_service
+        if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+            write_systemd_service
+        else
+            write_openrc_service
+        fi
     else
         write_macos_service
     fi
@@ -262,6 +325,14 @@ install_proxy() {
     write_config "${listen}" "${github_host}" "${docker_host}" "${docker_auth_host}"
     restart_service
     printf 'Installed gh-proxy on %s.\n' "${listen}"
+}
+
+update_proxy() {
+    [[ -x "${INSTALL_DIR}/gh-proxy" ]] || { printf 'gh-proxy is not installed.\n'; return; }
+    [[ -r "${CONFIG_FILE}" ]] || { printf 'gh-proxy configuration is missing. Run install first.\n'; return; }
+    install_binary
+    restart_service
+    printf 'Updated gh-proxy to %s.\n' "$(<"${INSTALL_DIR}/VERSION")"
 }
 
 configure_proxy() {
@@ -299,8 +370,10 @@ EOF
 }
 
 show_logs() {
-    if [[ "${OS}" == "linux" ]]; then
+    if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
         journalctl -u gh-proxy.service --no-pager -n 100
+    elif [[ "${INIT_SYSTEM}" == "openrc" ]]; then
+        tail -n 100 "${OPENRC_LOG_FILE}" 2>/dev/null || printf 'No log file yet.\n'
     else
         [[ -f "${MACOS_LOG_FILE}" ]] && tail -n 100 "${MACOS_LOG_FILE}" || printf 'No log file yet.\n'
     fi
@@ -313,10 +386,17 @@ uninstall_proxy() {
     fi
 
     if [[ "${OS}" == "linux" ]]; then
-        systemctl disable --now gh-proxy.service 2>/dev/null || true
-        rm -f "${LINUX_SERVICE_FILE}" "${LINUX_SYSCTL_FILE}"
-        systemctl daemon-reload
-        systemctl reset-failed gh-proxy.service 2>/dev/null || true
+        if [[ "${INIT_SYSTEM}" == "systemd" ]]; then
+            systemctl disable --now gh-proxy.service 2>/dev/null || true
+            rm -f "${LINUX_SERVICE_FILE}"
+            systemctl daemon-reload
+            systemctl reset-failed gh-proxy.service 2>/dev/null || true
+        else
+            rc-service gh-proxy stop 2>/dev/null || true
+            rc-update del gh-proxy default 2>/dev/null || true
+            rm -f "${OPENRC_SERVICE_FILE}" "${OPENRC_LOG_FILE}"
+        fi
+        rm -f "${LINUX_SYSCTL_FILE}"
     else
         launchctl bootout system "${MACOS_PLIST_FILE}" 2>/dev/null || true
         rm -f "${MACOS_PLIST_FILE}" "${MACOS_LOG_FILE}"
@@ -329,18 +409,20 @@ menu() {
     local default_option="$1"
     while true; do
         printf '\n%s\n' 'gh-proxy management'
-        printf '%s\n' '1. Install or update'
-        printf '%s\n' '2. Configure listener'
-        printf '%s\n' '3. Apply TCP tuning'
-        printf '%s\n' '4. View logs'
-        printf '%s\n' '5. Uninstall'
+        printf '%s\n' '1. Install or reinstall'
+        printf '%s\n' '2. Update to latest release'
+        printf '%s\n' '3. Configure proxy domains and listener'
+        printf '%s\n' '4. Apply TCP tuning'
+        printf '%s\n' '5. View logs'
+        printf '%s\n' '6. Uninstall'
         printf '%s\n' '0. Exit'
         case "$(read_input 'Select an option' "${default_option}")" in
             1) install_proxy ;;
-            2) configure_proxy ;;
-            3) apply_tuning ;;
-            4) show_logs ;;
-            5) uninstall_proxy ;;
+            2) update_proxy ;;
+            3) configure_proxy ;;
+            4) apply_tuning ;;
+            5) show_logs ;;
+            6) uninstall_proxy ;;
             0) return ;;
             *) printf 'Invalid option.\n' ;;
         esac
@@ -351,12 +433,11 @@ menu() {
 main() {
     need_root
     detect_platform
+    detect_init_system
     for command in curl tar install; do
         command -v "${command}" >/dev/null || die "missing command: ${command}"
     done
-    if [[ "${OS}" == "linux" ]]; then
-        command -v systemctl >/dev/null || die "systemd is required on Linux"
-    else
+    if [[ "${OS}" != "linux" ]]; then
         command -v launchctl >/dev/null || die "launchd is required on macOS"
     fi
 
