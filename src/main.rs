@@ -295,16 +295,13 @@ impl ProxyHttp for Proxy {
                                 .expect("GHCR requires Docker host")
                         ),
                     )
-                } else {
+                } else if let Some(docker_auth_host) = self.docker_auth_host.as_deref() {
                     challenge.replace(
                         "https://auth.docker.io/",
-                        &format!(
-                            "https://{}/",
-                            self.docker_auth_host
-                                .as_deref()
-                                .expect("Docker auth requires auth host")
-                        ),
+                        &format!("https://{docker_auth_host}/"),
                     )
+                } else {
+                    challenge
                 };
                 response.insert_header("www-authenticate", challenge)?;
             }
@@ -345,9 +342,6 @@ fn main() {
         .map(str::trim)
         .filter(|host| !host.is_empty())
         .map(Proxy::configured_host);
-    if docker_host.is_some() != docker_auth_host.is_some() {
-        panic!("GH_PROXY_DOCKER_HOST and GH_PROXY_DOCKER_AUTH_HOST must be set together");
-    }
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
 
     let conf = pingora::server::configuration::ServerConf {
@@ -397,6 +391,28 @@ mod tests {
         );
         assert_eq!(proxy.route("docker-auth.example.com"), Some(DOCKER_AUTH));
         assert_eq!(proxy.route("example.com"), None);
+    }
+
+    #[test]
+    fn permits_disabling_optional_proxy_hosts_independently() {
+        let registry_only = Proxy {
+            github_host: "github-proxy.example.com".to_owned(),
+            docker_host: Some("docker-proxy.example.com".to_owned()),
+            docker_auth_host: None,
+        };
+        assert_eq!(
+            registry_only.route("docker-proxy.example.com"),
+            Some(DOCKER_REGISTRY)
+        );
+        assert_eq!(registry_only.route("docker-auth.example.com"), None);
+
+        let github_only = Proxy {
+            github_host: "github-proxy.example.com".to_owned(),
+            docker_host: None,
+            docker_auth_host: None,
+        };
+        assert_eq!(github_only.route("github-proxy.example.com"), Some(GITHUB));
+        assert_eq!(github_only.route("docker-proxy.example.com"), None);
     }
 
     #[test]

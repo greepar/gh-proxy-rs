@@ -125,10 +125,8 @@ write_config() {
     local docker_auth_host="$4"
     validate_listen "${listen}"
     validate_hostname "${github_host}"
-    if [[ -n "${docker_host}" ]]; then
-        validate_hostname "${docker_host}"
-        validate_hostname "${docker_auth_host}"
-    fi
+    [[ -z "${docker_host}" ]] || validate_hostname "${docker_host}"
+    [[ -z "${docker_auth_host}" ]] || validate_hostname "${docker_auth_host}"
     install -d -m 0755 -o root -g root "${INSTALL_DIR}"
     cat >"${CONFIG_FILE}" <<EOF
 # gh-proxy service configuration
