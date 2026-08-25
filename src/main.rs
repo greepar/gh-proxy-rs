@@ -17,6 +17,8 @@ const GITHUB_OBJECTS: Upstream = Upstream::new("objects.githubusercontent.com");
 const GITHUB_RELEASES: Upstream = Upstream::new("release-assets.githubusercontent.com");
 const DOCKER_REGISTRY: Upstream = Upstream::new("registry-1.docker.io");
 const DOCKER_AUTH: Upstream = Upstream::new("auth.docker.io");
+const DOCKER_CLOUDFRONT: Upstream = Upstream::new("production.cloudfront.docker.com");
+const DOCKER_CLOUDFLARE: Upstream = Upstream::new("production.cloudflare.docker.com");
 const GHCR: Upstream = Upstream::new("ghcr.io");
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -129,6 +131,31 @@ impl Proxy {
         Some(format!("https://{}/{location}", self.github_host))
     }
 
+    fn docker_cdn_upstream(host: &str) -> Option<Upstream> {
+        match host.to_ascii_lowercase().as_str() {
+            "production.cloudfront.docker.com" => Some(DOCKER_CLOUDFRONT),
+            "production.cloudflare.docker.com" => Some(DOCKER_CLOUDFLARE),
+            _ => None,
+        }
+    }
+
+    fn docker_url_target(uri: &Uri) -> Option<(Upstream, Uri)> {
+        let target = uri.path_and_query()?.as_str().strip_prefix('/')?;
+        let target: Uri = target.parse().ok()?;
+        let upstream = Self::docker_cdn_upstream(target.host()?)?;
+        let path_and_query = target.path_and_query().map_or("/", |value| value.as_str());
+        Some((upstream, path_and_query.parse().ok()?))
+    }
+
+    fn docker_proxy_redirect(&self, location: &str) -> Option<String> {
+        let target: Uri = location.parse().ok()?;
+        Self::docker_cdn_upstream(target.host()?)?;
+        Some(format!(
+            "https://{}/{location}",
+            self.docker_host.as_deref()?
+        ))
+    }
+
     fn ghcr_target(uri: &Uri) -> Option<Uri> {
         let target = uri.path_and_query()?.as_str();
         let target = if let Some(target) = target.strip_prefix("/v2/ghcr.io") {
@@ -188,6 +215,11 @@ impl ProxyHttp for Proxy {
             if let Some(target_uri) = Self::ghcr_target(&session.req_header().uri) {
                 session.req_header_mut().set_uri(target_uri);
                 upstream = Some(GHCR);
+            } else if let Some((target_upstream, target_uri)) =
+                Self::docker_url_target(&session.req_header().uri)
+            {
+                session.req_header_mut().set_uri(target_uri);
+                upstream = Some(target_upstream);
             }
         }
 
@@ -260,21 +292,21 @@ impl ProxyHttp for Proxy {
         response.remove_header(&SERVER);
         response.remove_header(&VIA);
 
-        if ctx
-            .upstream
-            .is_some_and(|upstream| upstream != DOCKER_REGISTRY)
-        {
-            let location = response
-                .headers
-                .get("location")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned);
-            if let Some(location) = location {
-                if let Some(rewritten) = self.github_proxy_redirect(&location) {
-                    response.insert_header("location", rewritten)?;
-                    // GitHub release redirects contain short-lived signed URLs.
-                    response.insert_header("cache-control", "no-store")?;
-                }
+        let location = response
+            .headers
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        if let Some(location) = location {
+            let rewritten = if ctx.upstream == Some(DOCKER_REGISTRY) {
+                self.docker_proxy_redirect(&location)
+            } else {
+                self.github_proxy_redirect(&location)
+            };
+            if let Some(rewritten) = rewritten {
+                response.insert_header("location", rewritten)?;
+                // Signed download URLs are short-lived and must not be cached.
+                response.insert_header("cache-control", "no-store")?;
             }
         }
 
@@ -461,6 +493,34 @@ mod tests {
         assert!(
             proxy
                 .github_proxy_redirect("https://example.com/file")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rewrites_only_official_docker_cdn_redirects_through_proxy() {
+        let proxy = proxy();
+        let location = "https://production.cloudfront.docker.com/registry-v2/blob/data?Expires=1";
+        assert_eq!(
+            proxy.docker_proxy_redirect(location).as_deref(),
+            Some(
+                "https://docker-proxy.example.com/https://production.cloudfront.docker.com/registry-v2/blob/data?Expires=1"
+            )
+        );
+
+        let uri: Uri = "/https://production.cloudfront.docker.com/registry-v2/blob/data?Expires=1"
+            .parse()
+            .unwrap();
+        let (upstream, path) = Proxy::docker_url_target(&uri).unwrap();
+        assert_eq!(upstream, DOCKER_CLOUDFRONT);
+        assert_eq!(
+            path.path_and_query().unwrap().as_str(),
+            "/registry-v2/blob/data?Expires=1"
+        );
+
+        assert!(
+            proxy
+                .docker_proxy_redirect("https://example.com/blob")
                 .is_none()
         );
     }
