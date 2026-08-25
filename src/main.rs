@@ -19,6 +19,7 @@ const DOCKER_REGISTRY: Upstream = Upstream::new("registry-1.docker.io");
 const DOCKER_AUTH: Upstream = Upstream::new("auth.docker.io");
 const DOCKER_CLOUDFRONT: Upstream = Upstream::new("production.cloudfront.docker.com");
 const DOCKER_CLOUDFLARE: Upstream = Upstream::new("production.cloudflare.docker.com");
+const GHCR_BLOBS: Upstream = Upstream::new("pkg-containers.githubusercontent.com");
 const GHCR: Upstream = Upstream::new("ghcr.io");
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -135,6 +136,7 @@ impl Proxy {
         match host.to_ascii_lowercase().as_str() {
             "production.cloudfront.docker.com" => Some(DOCKER_CLOUDFRONT),
             "production.cloudflare.docker.com" => Some(DOCKER_CLOUDFLARE),
+            "pkg-containers.githubusercontent.com" => Some(GHCR_BLOBS),
             _ => None,
         }
     }
@@ -298,7 +300,7 @@ impl ProxyHttp for Proxy {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         if let Some(location) = location {
-            let rewritten = if ctx.upstream == Some(DOCKER_REGISTRY) {
+            let rewritten = if ctx.upstream == Some(DOCKER_REGISTRY) || ctx.upstream == Some(GHCR) {
                 self.docker_proxy_redirect(&location)
             } else {
                 self.github_proxy_redirect(&location)
@@ -522,6 +524,22 @@ mod tests {
             proxy
                 .docker_proxy_redirect("https://example.com/blob")
                 .is_none()
+        );
+
+        let ghcr_location =
+            "https://pkg-containers.githubusercontent.com/ghcrblobs10/blobs/sha256:abc?sig=1";
+        assert_eq!(
+            proxy.docker_proxy_redirect(ghcr_location).as_deref(),
+            Some(
+                "https://docker-proxy.example.com/https://pkg-containers.githubusercontent.com/ghcrblobs10/blobs/sha256:abc?sig=1"
+            )
+        );
+        let uri: Uri = format!("/{ghcr_location}").parse().unwrap();
+        let (upstream, path) = Proxy::docker_url_target(&uri).unwrap();
+        assert_eq!(upstream, GHCR_BLOBS);
+        assert_eq!(
+            path.path_and_query().unwrap().as_str(),
+            "/ghcrblobs10/blobs/sha256:abc?sig=1"
         );
     }
 
