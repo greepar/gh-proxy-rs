@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'exit 130' INT TERM HUP
+
 REPO="greepar/gh-proxy-rs"
 INSTALL_DIR="/opt/gh-proxy"
 CONFIG_FILE="${INSTALL_DIR}/gh-proxy.conf"
@@ -34,9 +36,9 @@ read_input() {
 
     if [[ -r /dev/tty ]]; then
         if [[ -n "${default}" ]]; then
-            read -r -p "${prompt} [${default}]: " value </dev/tty || true
+            read -r -p "${prompt} [${default}]: " value </dev/tty
         else
-            read -r -p "${prompt}: " value </dev/tty || true
+            read -r -p "${prompt}: " value </dev/tty
         fi
     else
         value=""
@@ -154,7 +156,10 @@ EOF
 
 latest_version() {
     local latest_url
-    latest_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")
+    printf 'Checking latest gh-proxy release...\n' >&2
+    latest_url=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 \
+        -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest") || \
+        die "unable to determine latest release"
     printf '%s' "${latest_url##*/}"
 }
 
@@ -166,7 +171,8 @@ install_binary() {
     tmp_dir=$(mktemp -d)
 
     printf 'Downloading gh-proxy %s for %s...\n' "${version}" "${PLATFORM}"
-    curl -fL --retry 3 -o "${tmp_dir}/${archive}" "${base_url}/${archive}"
+    curl -fL --connect-timeout 10 --max-time 600 --retry 3 \
+        -o "${tmp_dir}/${archive}" "${base_url}/${archive}"
     tar -xzf "${tmp_dir}/${archive}" -C "${tmp_dir}"
 
     install -d -m 0755 -o root -g root "${INSTALL_DIR}"
@@ -407,6 +413,7 @@ uninstall_proxy() {
 
 menu() {
     local default_option="$1"
+    local option
     while true; do
         printf '\n%s\n' 'gh-proxy management'
         printf '%s\n' '1. Install or reinstall'
@@ -416,7 +423,8 @@ menu() {
         printf '%s\n' '5. View logs'
         printf '%s\n' '6. Uninstall'
         printf '%s\n' '0. Exit'
-        case "$(read_input 'Select an option' "${default_option}")" in
+        option=$(read_input 'Select an option' "${default_option}")
+        case "${option}" in
             1) install_proxy ;;
             2) update_proxy ;;
             3) configure_proxy ;;
@@ -440,6 +448,17 @@ main() {
     if [[ "${OS}" != "linux" ]]; then
         command -v launchctl >/dev/null || die "launchd is required on macOS"
     fi
+
+    case "${1:-menu}" in
+        install) install_proxy; return ;;
+        update) update_proxy; return ;;
+        configure) configure_proxy; return ;;
+        tune) apply_tuning; return ;;
+        logs) show_logs; return ;;
+        uninstall) uninstall_proxy; return ;;
+        menu) ;;
+        *) die "unknown command: ${1}" ;;
+    esac
 
     if [[ ! -x "${INSTALL_DIR}/gh-proxy" ]]; then
         printf 'gh-proxy is not installed. Select 1 to start first-time setup.\n'

@@ -7,7 +7,7 @@
 Linux/macOS 一键安装脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/greepar/gh-proxy-rs/main/install.sh | sudo bash
+curl -fsSL -o /tmp/gh-proxy-install.sh https://raw.githubusercontent.com/greepar/gh-proxy-rs/main/install.sh && sudo bash /tmp/gh-proxy-install.sh; rm -f /tmp/gh-proxy-install.sh
 ```
 
 Docker 一键部署：
